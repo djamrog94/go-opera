@@ -13,6 +13,9 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/console/prompt"
+	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/eth"
+	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
@@ -117,6 +120,7 @@ func initFlags() {
 	}
 	legacyRpcFlags = []cli.Flag{
 		utils.NoUSBFlag,
+		utils.GCModeFlag,
 		utils.LegacyRPCEnabledFlag,
 		utils.LegacyRPCListenAddrFlag,
 		utils.LegacyRPCPortFlag,
@@ -237,6 +241,68 @@ func init() {
 
 func Launch(args []string) error {
 	return app.Run(args)
+}
+
+func runApp(action interface{}, args []string) {
+	app.Name = "WrappedGeth"
+
+	app.Action = action
+	app.Flags = append(app.Flags, nodeFlags...)
+	app.Flags = append(app.Flags, rpcFlags...)
+	app.Flags = append(app.Flags, metricsFlags...)
+
+	err := app.Run(args)
+	if err != nil {
+		panic(err)
+	}
+}
+
+type HeavyGethServices struct {
+	Stack    *node.Node
+	Ethereum *eth.Ethereum
+}
+
+type BlockchainProvider interface {
+	BlockChain() *core.BlockChain
+}
+
+func ContinuouslyReportServiceStats(stack *node.Node, ethereum *eth.Ethereum) {
+	for {
+		fmt.Println("CurrentHeader.Number", ethereum.BlockChain().CurrentHeader().Number)
+		fmt.Println("PeerCount", stack.Server().PeerCount())
+		time.Sleep(3 * time.Second)
+	}
+}
+
+func getNodeConfig() *node.Config {
+	cfg := NodeDefaultConfig
+	// cfg.DataDir = "/storage/.opera"
+	return &cfg
+}
+func newEthereum(ctx *cli.Context, stack *node.Node) (*eth.Ethereum, error) {
+	cfg := ethconfig.Defaults
+	utils.SetEthConfig(ctx, stack, &cfg)
+	return eth.New(stack, &cfg)
+}
+func NewHeavyGethServiceProvider(args []string) func(func(services HeavyGethServices)) {
+	return func(f func(services HeavyGethServices)) {
+		runApp(func(ctx *cli.Context) {
+			stack := makeConfigNode(ctx, getNodeConfig())
+
+			ethereum, err := newEthereum(ctx, stack)
+			if err != nil {
+				panic(err)
+			}
+
+			utils.StartNode(ctx, stack)
+			defer stack.Close()
+
+			f(HeavyGethServices{
+				Stack:    stack,
+				Ethereum: ethereum,
+			})
+		}, args)
+	}
 }
 
 // opera is the main entry point into the system if no special subcommand is ran.
